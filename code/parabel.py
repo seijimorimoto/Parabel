@@ -74,8 +74,59 @@ class Parabel:
                 all_labels = np.concatenate([positive_labels, negative_labels])
 
                 # Fit the classifier with the data.
-                child.classifier.fit(all_samples, all_labels)
+                leaf.labels_classifiers[label] = LogisticRegression(
+                    fit_intercept=False, solver='liblinear')
+                leaf.labels_classifiers[label].fit(all_samples, all_labels)
     
+    def predict(self, x, search_width):
+        '''
+        Predicts the labels that correspond to a given data point.
+
+        :param x: the data point for which the labels are going to be predicted.
+
+        :param search_width: the maximum number of nodes that will be considered for checking for
+        possible label assignment to the data point at each level of the tree. 
+
+        :returns: a two-element tuple. The first element is the list of labels checked sorted in
+        descending order, such that the first label is the one with the most probability of being
+        assigned to the data point. The second element is a dictionary, where the keys are the
+        labels (strings) and the values are the probabilities of data point x being tagged with
+        them. 
+        '''
+        depth = self.tree.depth
+        root = self.tree.root
+        boundary_nodes = set([root])
+
+        # Explore all internal nodes level by level.
+        for _ in range(depth - 1):
+            boundary_nodes_temp = boundary_nodes.copy()
+            boundary_nodes = set()
+            # For each node in the boundary nodes of the current level...
+            for node in boundary_nodes_temp:
+                # Calculate the log-likelihood of data point x belonging to the probability
+                # distribution of each child node. Add the log-likelihood of the parent to each
+                # child so that the total probability of the data point x belonging to the path
+                # from the root node to the current nodes is obtained.
+                for child in node.get_children():
+                    child.log_likelihood = child.predict_log_proba(x) + node.log_likelihood
+                    boundary_nodes.add(child)
+            # Retain only the nodes with the greatest log-likelihood.
+            boundary_nodes = self._retain_most_probable_nodes(boundary_nodes, search_width)
+        
+        # For each label classifier in each leaf node reached through the search process, calculate
+        # the probability of the data point being tagged with the label.
+        labels_probabilities = dict()
+        for leaf in boundary_nodes:
+            for label, classifier in leaf.labels_classifiers.items():
+                # We use the second position in the tuple returned by predict_proba, because the
+                # first one corresponds to the probability of being in class 0 (rejected).
+                labels_probabilities[label] = classifier.predict_proba(x)[1]
+        
+        # Sort the labels checked according to the probability of data point x being tagged with
+        # them. Return the results.
+        labels_sorted = sorted(labels_probabilities, key=labels_probabilities.get, reverse=True)
+        return (labels_sorted, labels_probabilities)
+
     def _get_indices_of_inputs_active_in_node(self, node, labels_occurrences):
         '''
         Gets the indices of the inputs that were tagged with labels that are contained within a node
@@ -112,3 +163,16 @@ class Parabel:
         for index in indices:
             inputs.append(X[index])
         return inputs
+    
+    def _retain_most_probable_nodes(self, nodes, retain_size):
+        '''
+        Retains the nodes that have the highest log-likelihoods.
+
+        :param nodes: sets of nodes from which to select the ones with highest log-likelihoods.
+
+        :param retain_size: how many nodes to retain.
+
+        :returns: the set of the nodes with the highest log-likelihoods.
+        '''
+        sorted_nodes = sorted(nodes, key = lambda node : node.log_likelihood, reverse=True)
+        return set(sorted_nodes[:retain_size])

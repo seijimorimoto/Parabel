@@ -14,13 +14,16 @@ class LabelNode:
         Creates a node.
         '''
         self.classifier = LogisticRegression(fit_intercept=False, solver='liblinear')
+        self.labels_classifiers = dict()
         self.labels = None
         self.left_child = None
         self.right_child = None
         self.parent = None
+        self.log_likelihood = 0
         pass
 
     def get_children(self):
+        '''Returns the list of the left and right children.'''
         return [self.left_child, self.right_child]
 
     def set_left_child(self, node):
@@ -40,6 +43,17 @@ class LabelNode:
         '''
         self.right_child = node
         node.parent = self
+    
+    def predict_log_proba(self, x):
+        '''
+        Predict the log-likelihood of point x belonging to the probability distribution of this
+        node's classifier. Note that this method should only be used for internal nodes.
+
+        :param x: the data point for which the log-likelihood is to be calculated.
+
+        :returns: the log-likelihood. 
+        '''
+        return self.classifier.predict_log_proba([x])
 
 
 class LabelTree:
