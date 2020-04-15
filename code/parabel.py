@@ -1,149 +1,114 @@
-import nltk
 import numpy as np
-import os
-import pandas as pd
-import re
-import time
-from joblib import dump, load
-from nltk.stem import WordNetLemmatizer
-from math import sqrt
-from scipy.sparse.csr import csr_matrix
-from sklearn.feature_extraction.text import TfidfVectorizer
+from label_tree import LabelTree
+from sklearn.linear_model import LogisticRegression
 
-
-class LemmaTokenizer:
+class Parabel:
     '''
-    Callable class for tokenizing a document. The tokens will be the lemmatized words.
-    Lemmatization is carried out using the morphological processing of WordNet.
+    Class that implements the Parabel technique for extreme multi-label classification. Parabel
+    was originally designed by Prabhu et al. in their paper 'Parabel: Partitioned Label Trees for
+    Extreme Classification with Application in Dynamic Search Advertising' (https://doi.org/10.1145/3178876.3185998)
     '''
-
     def __init__(self):
-        '''Constructs the callable object'''
-        self.wnl = WordNetLemmatizer()
-
-    def __call__(self, document):
+        '''Creates an instance of the Parabel class.'''
+        self.tree = None
+    
+    def train(self, X, Y, max_labels_per_leaf, labels_occurrences, labels_to_vectors_dict):
         '''
-        Calls the object for tokenizing a document.
+        Executes the training process of the Parabel technique.
 
-        :param document: the document to tokenize.
+        :param X: matrix with shape (N, M), where N is the number of inputs and M is the number of
+        features of each input.
         '''
-        return [self.wnl.lemmatize(word) for word in nltk.word_tokenize(document)]
+        # TODO: Update method comment when the exact function parameters are known.
+        # Construct the label tree.
+        self.tree = LabelTree(max_labels_per_leaf)
+        self.tree.build(labels_to_vectors_dict)
 
+        # For each internal node in the tree...
+        for node in self.tree.internal_nodes:
+            # Get the indices of the training points that are 'active' in this node, i.e., all the
+            # training points that were tagged with labels contained in this node.
+            active_indices = self._get_indices_of_inputs_active_in_node(node, labels_occurrences)
+            
+            # Iterate over the children of this node (left and right children).
+            for child in node.get_children():
+                if child not in self.tree.leaves:
+                    # Get the indices of the training points that are 'active' and 'inactive' in
+                    # the child. The 'inactive' points are those that are active in the parent node
+                    # but not in the child. 
+                    active_indices_child = self._get_indices_of_inputs_active_in_node(child, labels_occurrences)
+                    inactive_indices_child = active_indices.difference(active_indices_child)
+                    
+                    # Get the positive and negative samples from the active and inactive indices.
+                    # Create the positive and negative labels for the samples.
+                    positive_samples = self._get_inputs_from_indices(X, active_indices_child)
+                    negative_samples = self._get_inputs_from_indices(X, inactive_indices_child)
+                    positive_labels = np.ones(len(positive_samples))
+                    negative_labels = np.zeros(len(negative_samples))
 
-class Preprocessor:
-    '''
-    Callable class for carrying out pre-processing tasks on a document.
-    '''
+                    # Join the positive and negative samples into one list. Do the same for labels.
+                    all_samples = positive_samples + negative_samples
+                    all_labels = np.concatenate([positive_labels, negative_labels])
 
-    def __call__(self, document):
+                    # Fit the classifier with the data.
+                    child.classifier.fit(all_samples, all_labels)
+        
+        # For each leaf node in the tree...
+        for leaf in self.tree.leaves:
+            # Get the indices of the training points that are 'active' in this node.
+            input_indices = self._get_indices_of_inputs_active_in_node(leaf, labels_occurrences)
+
+            # For each label contained in this leaf node...
+            for label in leaf.labels:
+                # Get the positive samples (training points having the label) and negative samples
+                # (training points belonging to the rest of the labels in this node).
+                # Create the positive and negative labels for the samples.
+                positive_samples = self._get_inputs_from_indices(X, labels_occurrences[label])
+                inactive_indices = input_indices.difference(set(labels_occurrences[label]))
+                negative_samples = self._get_inputs_from_indices(X, inactive_indices)
+                positive_labels = np.ones(len(positive_samples))
+                negative_labels = np.zeros(len(negative_samples))
+
+                # Join the positive and negative samples into one list. Do the same for labels.
+                all_samples = positive_samples + negative_samples
+                all_labels = np.concatenate([positive_labels, negative_labels])
+
+                # Fit the classifier with the data.
+                child.classifier.fit(all_samples, all_labels)
+    
+    def _get_indices_of_inputs_active_in_node(self, node, labels_occurrences):
         '''
-        Calls the object for pre-processing a document. Preprocessing consists of joining words that
-        have a hyphen, discarding all characters except for sequences of alphabetic characters with
-        a length of two or more, and lower-casing the document.
+        Gets the indices of the inputs that were tagged with labels that are contained within a node
+        of the label tree.
 
-        :param document: the document to pre-process.
+        :param node: the node for which the inputs' indices are to be found.
+
+        :param labels_ocurrences: a dictionary where the keys are labels (strings). The value
+        associated with each key/label is the list of indices of the inputs that were tagged with
+        that label.
+
+        :returns: a set of indices of the inputs active in the node.
         '''
-        document = document.split('-')
-        document = ''.join(document)
-        pattern = re.compile('[a-zA-Z]{2,}')
-        document = pattern.findall(document)
-        document = ' '.join(document)
-        document = document.lower()
-        return document
+        x_indices = set()
+        for label in node.labels:
+            for index in labels_occurrences[label]:
+                x_indices.add(index)
+        return x_indices
+    
+    def _get_inputs_from_indices(self, X, indices):
+        '''
+        Gets the inputs that are placed in specific row indices of the input matrix.
 
+        :param X: matrix with shape (N, M), where N is the number of inputs and M is the number of
+        features of each input.
 
-def load_dataset(path):
-    '''
-    Loads a dataset.
+        :param indices: set of indices indicating the rows that will be extracted from X and
+        returned in this method.
 
-    :param path: Path to the dataset to load.
-    '''
-    return pd.read_csv(path)
-
-
-def prepare_nltk():
-    '''Prepares NLTK by downloading specific packages.'''
-    nltk.download('punkt')
-    nltk.download('wordnet')
-
-
-def transform_labels_to_vectors(input_matrix, labels_ocurrences, labels_to_vectors_dict):
-    '''
-    Transforms labels to their vector representation by averaging the input vectors that were tagged
-    with each label.
-
-    :param input_matrix: csr_matrix with shape (N, M), where N is the number of inputs and M is the
-    number of features of each input.
-
-    :param labels_ocurrences: a dictionary where the keys are labels (strings). The value associated
-    with each key/label is the list of indices of the inputs that were tagged with that label.
-
-    :param labels_to_vectors_dict: a dictionary containing the labels (strings) as its keys. The
-    value associated with each key (which will be the vector representation of the label) will be
-    populated once this method finishes executing. 
-    '''
-    # Iterate over the labels.
-    for label, occurrences in labels_ocurrences.items():
-        # Add all the input vectors that were tagged with the current label.
-        for index in occurrences:
-            labels_to_vectors_dict[label] += input_matrix[index]
-        # Divide the vector of sums by its euclidean norm to obtain the mean vector, representing
-        # the label.
-        vector = labels_to_vectors_dict[label]
-        euclidean_norm = vector.dot(vector.transpose()).toarray()[0][0]
-        euclidean_norm = sqrt(euclidean_norm)
-        labels_to_vectors_dict[label] /= euclidean_norm
-
-
-def main():
-    prepare_nltk()
-    if (os.path.exists('data/econbiz/econbiz_inputs_vectors.joblib')):
-        Y = pd.read_pickle('data/econbiz/econbiz_labels.pkl')
-        folds = pd.read_pickle('data/econbiz/econbiz_folds.pkl')
-        input_matrix = load('data/econbiz/econbiz_inputs_vectors.joblib')
-    else:
-        vectorizer = TfidfVectorizer(
-            preprocessor=Preprocessor(), tokenizer=LemmaTokenizer(), max_features=25000)
-        print('Loading dataset...')
-        t = time.time()
-        dataset = load_dataset('data/econbiz/econbiz.csv')
-        print(f'Finish loading dataset in {time.time() - t} seconds')
-        X = dataset['title']
-        Y = dataset['labels']
-        folds = dataset['fold']
-        pd.to_pickle(Y, 'data/econbiz/econbiz_labels.pkl')
-        pd.to_pickle(folds, 'data/econbiz/econbiz_folds.pkl')
-        print('Vectorizing the inputs...')
-        t = time.time()
-        input_matrix = vectorizer.fit_transform(X)
-        print(f'Finish vectorizing inputs in {time.time() - t} seconds')
-        print(input_matrix.shape)
-        dump(input_matrix, 'data/econbiz/econbiz_inputs_vectors.joblib')
-
-    if (os.path.exists('data/econbiz/econbiz_labels_vectors.joblib')):
-        labels_to_vectors_dict = load(
-            'data/econbiz/econbiz_labels_vectors.joblib')
-    else:
-        labels_to_vectors_dict = dict()
-        labels_occurrences = dict()
-
-        index = 0
-        for labels in Y:
-            for label in labels.split('\t'):
-                if label not in labels_to_vectors_dict:
-                    labels_to_vectors_dict[label] = csr_matrix((1, 25000))
-                    labels_occurrences[label] = [index]
-                else:
-                    labels_occurrences[label] += [index]
-            index += 1
-
-        print(f'Vectorizing the labels...')
-        t = time.time()
-        transform_labels_to_vectors(
-            input_matrix, labels_occurrences, labels_to_vectors_dict)
-        print(f'Finish vectorizing labels in {time.time() - t} seconds')
-        dump(labels_to_vectors_dict, 'data/econbiz/econbiz_labels_vectors.joblib')
-
-
-if __name__ == "__main__":
-    main()
+        :returns: a list of vectors representing the inputs located at the given positions within
+        the matrix X.
+        '''
+        inputs = []
+        for index in indices:
+            inputs.append(X[index])
+        return inputs

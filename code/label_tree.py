@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import random
+from sklearn.linear_model import LogisticRegression
 
 
 class LabelNode:
@@ -12,11 +13,15 @@ class LabelNode:
         '''
         Creates a node.
         '''
+        self.classifier = LogisticRegression(fit_intercept=False, solver='liblinear')
         self.labels = None
         self.left_child = None
         self.right_child = None
         self.parent = None
         pass
+
+    def get_children(self):
+        return [self.left_child, self.right_child]
 
     def set_left_child(self, node):
         '''
@@ -48,6 +53,8 @@ class LabelTree:
 
         :param max_labels_per_leaf: the maximum allowed number of labels to have in a leaf node.
         '''
+        self.depth = 0
+        self.internal_nodes = set()
         self.leaves = set()
         self.root = LabelNode()
         self.max_labels_per_leaf = max_labels_per_leaf
@@ -59,7 +66,9 @@ class LabelTree:
         :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
         their numerical vector representations as its values.
         '''
+        self.depth = math.ceil(math.log2(len(labels_to_vectors_dict) / self.max_labels_per_leaf))
         self.root.labels = set(labels_to_vectors_dict.keys())
+        self.internal_nodes.add(self.root)
         self._grow_node_recursive(self.root, labels_to_vectors_dict)
 
     def _grow_node_recursive(self, node, labels_to_vectors_dict):
@@ -82,16 +91,16 @@ class LabelTree:
             n_right = LabelNode()
 
             # Partition the labels so that half goes to the left child and the rest to right one.
-            (labelset_left, labelset_right) = self._partition(
-                node.labels, labels_to_vectors_dict)
+            (labelset_left, labelset_right) = self._partition(node.labels, labels_to_vectors_dict)
 
             # Assign the labels to the children nodes.
             n_left.labels = labelset_left
             n_right.labels = labelset_right
             node.set_left_child(n_left)
             node.set_right_child(n_right)
+            self.internal_nodes.add(n_left)
+            self.internal_nodes.add(n_right)
 
-            # TODO: Check to see if we need to store a set of internal nodes.
             # Recursively grow the left and right children nodes.
             self._grow_node_recursive(n_left, labels_to_vectors_dict)
             self._grow_node_recursive(n_right, labels_to_vectors_dict)
@@ -159,10 +168,8 @@ class LabelTree:
 
             # Update the mean vectors of the left and right partitions based on the labels that were
             # that were assigned to them in this iteration.
-            mean_vector_left = self._update_mean_vector(
-                labelset_left, labels_to_vectors_dict)
-            mean_vector_right = self._update_mean_vector(
-                labelset_right, labels_to_vectors_dict)
+            mean_vector_left = self._update_mean_vector(labelset_left, labels_to_vectors_dict)
+            mean_vector_right = self._update_mean_vector(labelset_right, labels_to_vectors_dict)
 
         # Return sets of labels for the left and right partitions.
         return (labelset_left, labelset_right)
@@ -196,8 +203,7 @@ class LabelTree:
         # For each label, obtain its vector representation and compute the similarities.
         for label in node_labels:
             label_vector = labels_to_vectors_dict[label]
-            similarities.append((left_t.dot(
-                label_vector) - right_t.dot(label_vector))[0][0])
+            similarities.append((left_t.dot(label_vector) - right_t.dot(label_vector))[0][0])
             node_labels_ordered.append(label)
 
         # Return the lists.
