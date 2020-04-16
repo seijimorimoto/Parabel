@@ -1,6 +1,8 @@
+import math
 import numpy as np
 from label_tree import LabelTree
 from sklearn.linear_model import LogisticRegression
+from utils import get_labels_occurrences, vectorize_documents, vectorize_labels, ValidationMetric
 
 class Parabel:
     '''
@@ -12,14 +14,29 @@ class Parabel:
         '''Creates an instance of the Parabel class.'''
         self.tree = None
     
-    def train(self, X, Y, max_labels_per_leaf, labels_occurrences, labels_to_vectors_dict):
+    def train(self, X, Y, max_labels_per_leaf, convert_X=True):
         '''
         Executes the training process of the Parabel technique.
 
         :param X: matrix with shape (N, M), where N is the number of inputs and M is the number of
-        features of each input.
+        features of each input. Can also be a list of 1D matrices. Can also be a list of strings, in
+        which case 'convert_X' must be set to True.
+
+        :param Y: an array of size N, where N is the number of input data points. Each position
+        within the array has a string of labels (each one separated by a TAB character) that
+        correspond to the labels with which the respective data point was tagged.
+
+        :param max_labels_per_leaf: the maximum allowed number of labels to have in a leaf node of
+        the label tree that will be generated.
+
+        :convert_X: whether to convert the input from a list of strings to a matrix of numeric
+        values.
         '''
-        # TODO: Update method comment when the exact function parameters are known.
+        # Vectorize inputs (if needed) and labels.
+        input_matrix = vectorize_documents(X, 25000) if convert_X else X
+        labels_occurrences = get_labels_occurrences(Y)
+        labels_to_vectors_dict = vectorize_labels(input_matrix, labels_occurrences)
+
         # Construct the label tree.
         self.tree = LabelTree(max_labels_per_leaf)
         self.tree.build(labels_to_vectors_dict)
@@ -126,6 +143,156 @@ class Parabel:
         # them. Return the results.
         labels_sorted = sorted(labels_probabilities, key=labels_probabilities.get, reverse=True)
         return (labels_sorted, labels_probabilities)
+    
+    def evaluate(self, X, Y, search_width, metrics, metrics_args=None):
+        '''
+        Evaluates the performance of the Parabel classifier on a test set.
+
+        :param X: matrix with shape (N, M), where N is the number of test points and M is the
+        number of features of each point. Can also be a list of 1D matrices.
+
+        :param Y: an array of size N, where N is the number of test points. Each position within
+        the array has a string of labels (each one separated by a TAB character) that correspond to
+        the labels with which the respective test point was tagged.
+
+        :param search_width: the maximum number of nodes that will be considered for checking for
+        possible label assignment to the test points at each level of the tree. 
+
+        :param metrics: list of ValidationMetrics to use for evaluating performance.
+
+        :param metrics_args: list of dictionaries that is parallel to the metrics' list. Each
+        dictionary contains parameters needed for the respective ValidationMetrics. If a given
+        ValidationMetric does not require parameters, use None or an empty dictionary for it.
+
+        :returns: an array with the average scores obtained for each metric.
+        '''
+        Y = [set(labels.split('\t')) for labels in Y]
+        scores = []
+
+        # Iterate over each metric.
+        for i in range(len(metrics)):
+            metric = metrics[i]
+            metric_args = metrics_args[i]
+
+            # Procedure for the F1_score_sample metric.
+            if metric == ValidationMetric.F1_score_sample:
+                f1_total = 0
+                # Calculate the f1-score for each test point. Accumulate all the results and average
+                # them.
+                for i in range(len(X)):
+                    test_point = X[i]
+                    (labels_sorted, labels_probabilities) = self.predict(test_point, search_width)
+                    predicted = self._get_predicted_labels(labels_sorted, labels_probabilities)
+                    predicted = set(predicted)
+                    true_positives = len(Y[i].intersection(predicted))
+                    precision = true_positives / len(predicted)
+                    recall = true_positives / len(Y[i])
+                    f1 = 2 * precision * recall / (precision + recall)
+                    f1_total += f1
+                f1_total /= len(X)
+                scores.append(f1_total)
+
+            # Procedure for the Precision_at_k metric.
+            elif metric == ValidationMetric.Precision_at_k:
+                precision_at_k_total = 0
+                # Calculate the precision@k for each test point. Accumulate all the results and
+                # average them.
+                for i in range(len(X)):
+                    test_point = X[i]
+                    k = metric_args['k']
+                    (labels_sorted, _) = self.predict(test_point, search_width)
+                    precision_at_k = 0
+                    for i in range(min(k, len(labels_sorted))):
+                        label = labels_sorted[i]
+                        if label in Y[i]:
+                            precision_at_k += 1
+                    precision_at_k /= k
+                    precision_at_k_total += precision_at_k
+                precision_at_k_total /= len(X)
+                scores.append(precision_at_k_total)
+        
+        # Return scores.
+        return np.array(scores)
+    
+    def cross_validate(self, X, Y, folds, max_labels_per_leaf=100, search_width=10, convert_X=True, metrics=[ValidationMetric.F1_score_sample], metrics_args=[None]):
+        '''
+        Performs a 10-fold cross validation of the Parabel classifier.
+
+        :param X: matrix with shape (N, M), where N is the number of inputs and M is the number of
+        features of each input. Can also be a list of 1D matrices. Can also be a list of strings, in
+        which case 'convert_X' must be set to True.
+
+        :param Y: an array of size N, where N is the number of input data points. Each position
+        within the array has a string of labels (each one separated by a TAB character) that
+        correspond to the labels with which the respective data point was tagged.
+
+        :param folds: an array of size N, where N is the number of input data points. Each value
+        within the array must indicate the fold (0-9) to which the corresponding input data point
+        belongs. Values greater than 9 will be considered extra data that will be used as part of
+        the training set in each iteration of the 10-fold cross validation.
+
+        :param max_labels_per_leaf: the maximum allowed number of labels to have in a leaf node of
+        the label tree that will be generated.
+
+        :param search_width: the maximum number of nodes that will be considered for checking for
+        possible label assignment to the test points at each level of the tree. 
+
+        :param metrics: list of ValidationMetrics to use for evaluating performance.
+
+        :param metrics_args: list of dictionaries that is parallel to the metrics' list. Each
+        dictionary contains parameters needed for the respective ValidationMetrics. If a given
+        ValidationMetric does not require parameters, use None or an empty dictionary for it.
+
+        :returns: an array with the average cross validation scores obtained for each metric.
+        '''
+        # Vectorize inputs (if needed), get a mapping of folds to the input indices and initialize
+        # the scores to zero.
+        input_matrix = vectorize_documents(X, 25000) if convert_X else X
+        folds_dict = self._get_folds_dictionary(folds)
+        scores = np.zeros(len(metrics))
+
+        # Perform 10 iterations varying the fold used for testing each time.
+        for test_fold in range(10):
+            # Get the indices of the data that will be used for training and testing in this
+            # iteration.
+            train_indices = []
+            for train_fold in range(len(folds_dict)):
+                if train_fold != test_fold:
+                    train_indices += folds_dict[train_fold]
+            test_indices = folds_dict[test_fold]
+
+            # Get the actual inputs and labels from the train and test indices.
+            train_inputs = self._get_inputs_from_indices(input_matrix, train_indices)
+            test_inputs = self._get_inputs_from_indices(input_matrix, test_indices)
+            train_labels = self._get_inputs_from_indices(Y, train_indices)
+            test_labels = self._get_inputs_from_indices(Y, test_indices)
+            
+            # Train Parabel with the training data. Evaluate Parabel with the testing data. 
+            self.train(train_inputs, train_labels, max_labels_per_leaf, convert_X=False)
+            scores += self.evaluate(test_inputs, test_labels, search_width, metrics, metrics_args)
+        
+        # Average the scores obtained in all the iterations.
+        scores /= 10
+        return scores
+    
+    def _get_folds_dictionary(self, folds):
+        '''
+        Gets a mapping of folds to the training indices belonging to them.
+
+        :param folds: an array of size N, where N is the number of input data points. Each value
+        within the array must indicate the fold to which the corresponding input data point belongs.
+
+        :returns: a dictionary where the keys are the folds and the values are the lists of input
+        indices that belong to them.
+        '''
+        folds_dict = dict()
+        for i in range(len(folds)):
+            fold = folds[i]
+            if fold not in folds_dict:
+                folds_dict[fold] = [i]
+            else:
+                folds_dict[fold] += [i]
+        return folds_dict
 
     def _get_indices_of_inputs_active_in_node(self, node, labels_occurrences):
         '''
@@ -163,6 +330,33 @@ class Parabel:
         for index in indices:
             inputs.append(X[index])
         return inputs
+    
+    def _get_predicted_labels(self, labels_sorted, labels_probabilities):
+        '''
+        Gets the list of labels that were predicted for a data point.
+
+        :param labels_sorted: list of predicted labels sorted from highest probability to lowest
+        probability of being assigned to the data point.
+
+        :param labels_probabilities: list of probabilities of the predicted labels being assigned to
+        the data point. It is parallel to labels_sorted.
+
+        :returns: the list of labels that were predicted for a data point (i.e. had a probability
+        greater than or equal to 0.5)
+        '''
+        left = 0
+        right = len(labels_sorted) - 1
+        while right - left > 1:
+            mid = math.floor((left + right) / 2)
+            if labels_probabilities[mid] >= 0.5:
+                left = mid + 1
+            else:
+                right = mid - 1
+        if (labels_probabilities[right] >= 0.5):
+            return labels_sorted[:right + 1]
+        if (labels_probabilities[left] >= 0.5):
+            return labels_sorted[:left + 1]
+        return labels_sorted[:left]
     
     def _retain_most_probable_nodes(self, nodes, retain_size):
         '''
