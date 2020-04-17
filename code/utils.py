@@ -185,7 +185,10 @@ def transform_labels_to_vectors(input_matrix, labels, labels_ocurrences, start_i
         vector = labels_to_vectors_dict[label]
         euclidean_norm = vector.dot(vector.transpose()).toarray()[0][0]
         euclidean_norm = math.sqrt(euclidean_norm)
-        labels_to_vectors_dict[label] /= euclidean_norm
+        if euclidean_norm != 0:
+            labels_to_vectors_dict[label] /= euclidean_norm
+        else:
+            labels_to_vectors_dict[label][:] = 0
     
     return labels_to_vectors_dict
 
