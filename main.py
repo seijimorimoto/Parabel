@@ -5,10 +5,10 @@ from code.parabel import Parabel
 from code.utils import *
 from joblib import dump, load
 
-def perform_iterative_evaluation(X, Y, folds, outdir):
+def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
     '''
-    Iteratively perform cross validation of Parabel on subsets of the dataset given. Each iteration,
-    a sub-dataset of different size will be used to perform the cross validation procedure.
+    Iteratively perform validation of Parabel on subsets of the dataset given. Each iteration, a
+    sub-dataset of different size will be used to perform the validation procedure.
 
     :param X: matrix with shape (N, M), where N is the number of inputs in the whole dataset and M
     is the number of features of each input.
@@ -20,6 +20,9 @@ def perform_iterative_evaluation(X, Y, folds, outdir):
     :param folds: an array of size N, where N is the number of data points in the whole dataset.
     Each value within the array must indicate the fold to which the corresponding input data point
     belongs.
+
+    :param cross_validate: whether to perform cross validation using each subset of the dataset
+    given, or just perform a single training-evaluation procedure with each of them.
 
     :param outdir: the directory where information regarding time and scores will be outputted.
     '''
@@ -39,16 +42,28 @@ def perform_iterative_evaluation(X, Y, folds, outdir):
     metrics_args = [None, {'k': 1}, {'k': 3}, {'k': 5} ]
     folds_temp = dict()
 
-    # Get initial subset of the whole dataset and perform cross validation with it.
-    for fold in range(10):
-        inputs += get_values_from_indices(X, folds_dict[fold])
-        labels += get_values_from_indices(Y, folds_dict[fold])
-        folds_temp[fold] = folds_dict[fold]
-    parabel.cross_validate(inputs, labels, folds_temp,
-        convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+    # Get initial subset of the whole dataset and perform cross validation or simple training and
+    # evaluation (using the first fold as evaluation) with it.
+    if cross_validate:
+        for fold in range(10):
+            inputs += get_values_from_indices(X, folds_dict[fold])
+            labels += get_values_from_indices(Y, folds_dict[fold])
+            folds_temp[fold] = folds_dict[fold]
+        parabel.cross_validate(inputs, labels, folds_temp,
+            convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir) 
+    else:
+        for fold in range(1, 10):
+            inputs += get_values_from_indices(X, folds_dict[fold])
+            labels += get_values_from_indices(Y, folds_dict[fold])
+        test_inputs = get_values_from_indices(X, folds_dict[0])
+        test_labels = get_values_from_indices(Y, folds_dict[0])
+        parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
+        parabel.evaluate(test_inputs, test_labels, 10,
+            metrics=metrics, metrics_args=metrics_args, outdir=outdir)
 
     # Iteratively double the size of the subset to use by adding more data from the original full
-    # dataset. In each iteration, perform the cross validation procedure.
+    # dataset. In each iteration, perform the cross validation procedure or simple training and
+    # evaluation (using the first fold as evaluation).
     last_index = 0
     folds_temp[10] = []
     for i in range(3):
@@ -58,16 +73,27 @@ def perform_iterative_evaluation(X, Y, folds, outdir):
         labels += get_values_from_indices(Y, new_indices)
         last_index = last_index + dataset_size
         folds_temp[10] += new_indices
-        parabel.cross_validate(inputs, labels, folds_temp,
-            convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+        if cross_validate:
+            parabel.cross_validate(inputs, labels, folds_temp,
+                convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+        else:
+            parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
+            parabel.evaluate(test_inputs, test_labels, 10,
+                metrics=metrics, metrics_args=metrics_args, outdir=outdir)
     
-    # Now use the full original dataset and perform cross validation with it.
+    # Now use the full original dataset and perform cross validation with it or simple training and
+    # evaluation (using the first fold as evaluation).
     new_indices = folds_dict[10][last_index : ]
     inputs += get_values_from_indices(X, new_indices)
     labels += get_values_from_indices(Y, new_indices)
     folds_temp[10] += new_indices
-    parabel.cross_validate(inputs, labels, folds_temp,
-        convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+    if cross_validate:
+        parabel.cross_validate(inputs, labels, folds_temp,
+            convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+    else:
+        parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
+        parabel.evaluate(test_inputs, test_labels, 10,
+            metrics=metrics, metrics_args=metrics_args, outdir=outdir)
 
 
 def main():
@@ -109,7 +135,7 @@ def main():
             X = load(f'results/{args.dataset}/input_vectors.joblib')
 
         # Carry out the iterative evaluation procedure.
-        perform_iterative_evaluation(X, Y, folds, f'results/{args.dataset}/')
+        perform_iterative_evaluation(X, Y, folds, False, f'results/{args.dataset}/')
 
 
 if __name__ == "__main__":
