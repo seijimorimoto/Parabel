@@ -1,4 +1,5 @@
 import math
+import multiprocessing as mp
 import numpy as np
 import random
 from sklearn.linear_model import LogisticRegression
@@ -53,7 +54,7 @@ class LabelNode:
 
         :returns: the log-likelihood. 
         '''
-        return self.classifier.predict_log_proba([x])
+        return self.classifier.predict_log_proba(x)[0][1]
 
 
 class LabelTree:
@@ -80,12 +81,10 @@ class LabelTree:
         :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
         their numerical vector representations as its values.
         '''
-        self.depth = math.ceil(math.log2(len(labels_to_vectors_dict) / self.max_labels_per_leaf))
         self.root.labels = set(labels_to_vectors_dict.keys())
-        self.internal_nodes.add(self.root)
         self._grow_node_recursive(self.root, labels_to_vectors_dict)
 
-    def _grow_node_recursive(self, node, labels_to_vectors_dict):
+    def _grow_node_recursive(self, node, labels_to_vectors_dict, level=0):
         '''
         Grow a node/subtree by recursively splitting the labels into two clusters (one for each
         child) until leaf nodes are reached.
@@ -95,12 +94,17 @@ class LabelTree:
 
         :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
         their numerical vector representations as its values.
+
+        :param level: the level within the tree in which the node is located.
         '''
         # Check if the node is a leaf, in which case terminate the recursion.
         if len(node.labels) <= self.max_labels_per_leaf:
             self.leaves.add(node)
+            if level + 1 > self.depth:
+                self.depth = level + 1
         else:
             # Create left and right children of node.
+            self.internal_nodes.add(node)
             n_left = LabelNode()
             n_right = LabelNode()
 
@@ -112,12 +116,10 @@ class LabelTree:
             n_right.labels = labelset_right
             node.set_left_child(n_left)
             node.set_right_child(n_right)
-            self.internal_nodes.add(n_left)
-            self.internal_nodes.add(n_right)
 
             # Recursively grow the left and right children nodes.
-            self._grow_node_recursive(n_left, labels_to_vectors_dict)
-            self._grow_node_recursive(n_right, labels_to_vectors_dict)
+            self._grow_node_recursive(n_left, labels_to_vectors_dict, level + 1)
+            self._grow_node_recursive(n_right, labels_to_vectors_dict, level + 1)
 
     def _partition(self, node_labels, labels_to_vectors_dict):
         '''
@@ -134,14 +136,16 @@ class LabelTree:
         '''
         # Initialize a mean vector for the left and right partitions by uniformly sampling from all
         # the label vectors.
-        mean_vector_left = random.choice(labels_to_vectors_dict.values())
-        mean_vector_right = random.choice(labels_to_vectors_dict.values())
+        mean_label_left = random.choice(list(labels_to_vectors_dict.keys()))
+        mean_label_right = random.choice(list(labels_to_vectors_dict.keys()))
+        mean_vector_left = labels_to_vectors_dict[mean_label_left]
+        mean_vector_right = labels_to_vectors_dict[mean_label_right]
 
         # Initialize the sets of labels that will be assigned to the left and right partitions.
         labelset_left = set()
         labelset_right = set()
-        labelset_left_prev = set()
-        labelset_right_prev = set()
+        labelset_left_prev = set('dummy')
+        labelset_right_prev = set('dummy')
 
         # Iterate over this loop which adjusts the label assignments to the left and right
         # partitions until there is no change in assignments between consecutive iterations.
@@ -187,6 +191,44 @@ class LabelTree:
 
         # Return sets of labels for the left and right partitions.
         return (labelset_left, labelset_right)
+    
+    def _get_similarities(self, mean_left, mean_right, node_labels, labels_to_vectors_dict, start, end):
+        '''
+        Compute the 'similarities' between a set of label vectors and the mean vectors of left and
+        right partitions/clusters.
+
+        :param mean_vector_left: the mean vector of the left partition.
+
+        :param mean_vector_right: the mean vector of the right partition.
+
+        :param node_labels: list of labels (strings) for which the similarities to the left and
+        right partitions will be computed. The similarities will be computed only for a portion of
+        the list.
+
+        :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
+        their numerical vector representations as its values.
+
+        :param start: the starting index of the portion of the list of labels for which the
+        similarities will be computed.
+
+        :param end: the last index (exclusive) of the portion of the list of labels for which the
+        similarities will be computed.
+
+        :returns: a tuple where its first element is a list of the labels (strings) for which the
+        similarities were computed. The second element is a list with the similarity scores
+        of the labels (this list is parallel to the labels' list).
+        '''
+        similarities = []
+        node_labels_ordered = []
+        end = len(node_labels) if end == -1 else end
+        for i in range(start, end):
+            label = node_labels[i]
+            label_vector = labels_to_vectors_dict[label]
+            similarities.append(
+                (mean_left.dot(label_vector) - mean_right.dot(label_vector)).toarray()[0][0])
+            node_labels_ordered.append(label)
+        return (node_labels_ordered, similarities)
+        
 
     def _get_cluster_similarities(self, mean_vector_left, mean_vector_right, node_labels, labels_to_vectors_dict):
         '''
@@ -213,14 +255,22 @@ class LabelTree:
         node_labels_ordered = []
         left_t = mean_vector_left.transpose()
         right_t = mean_vector_right.transpose()
+        labels_per_process = math.floor(len(node_labels) / mp.cpu_count())
 
-        # For each label, obtain its vector representation and compute the similarities.
-        for label in node_labels:
-            label_vector = labels_to_vectors_dict[label]
-            similarities.append((left_t.dot(label_vector) - right_t.dot(label_vector))[0][0])
-            node_labels_ordered.append(label)
-
-        # Return the lists.
+        # Create N processes, one for each CPU core in the system. Each process will be in charge
+        # of computing the cluster similarities of a section of all the labels.
+        with mp.Pool(processes=mp.cpu_count()) as pool:
+            indices = [(i * labels_per_process, (i + 1) * labels_per_process)
+                for i in range(mp.cpu_count())]
+            last_process_start_index = indices[len(indices) - 1][0]
+            indices[len(indices) - 1] = (last_process_start_index, -1)
+            node_labels = list(node_labels)
+            args = [(left_t, right_t, node_labels, labels_to_vectors_dict, i, j)
+                for (i, j) in indices]
+            results = pool.starmap(self._get_similarities, args)
+            for (labels, simil) in results:
+                node_labels_ordered += labels
+                similarities += simil
         return (node_labels_ordered, similarities)
 
     def _get_labels_rankings(self, node_labels_ordered, values):

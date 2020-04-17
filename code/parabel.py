@@ -1,8 +1,10 @@
 import math
 import numpy as np
-from label_tree import LabelTree
+import time
+from code.label_tree import LabelTree
+from code.utils import *
 from sklearn.linear_model import LogisticRegression
-from utils import get_labels_occurrences, vectorize_documents, vectorize_labels, ValidationMetric
+from scipy.sparse import vstack
 
 class Parabel:
     '''
@@ -14,7 +16,8 @@ class Parabel:
         '''Creates an instance of the Parabel class.'''
         self.tree = None
     
-    def train(self, X, Y, max_labels_per_leaf, convert_X=True):
+
+    def train(self, X, Y, max_labels_per_leaf, convert_X=True, outdir=None, verbose=True):
         '''
         Executes the training process of the Parabel technique.
 
@@ -29,46 +32,86 @@ class Parabel:
         :param max_labels_per_leaf: the maximum allowed number of labels to have in a leaf node of
         the label tree that will be generated.
 
-        :convert_X: whether to convert the input from a list of strings to a matrix of numeric
+        :param convert_X: whether to convert the input from a list of strings to a matrix of numeric
         values.
+
+        :param outdir: the directory (if any) where information regarding training time will be
+        outputted.
+
+        :param verbose: whether to print information about the status of the training process in the
+        console as the procedure progresses.
         '''
-        # Vectorize inputs (if needed) and labels.
-        input_matrix = vectorize_documents(X, 25000) if convert_X else X
+        # Logging data to console.
+        if verbose:
+            print('Training has started.')
+        train_start = time.time()
+
+        # Vectorize inputs (if needed).
+        if convert_X:
+            if verbose:
+                print('Vectorizing inputs...')
+            start_time = time.time()
+            X = vectorize_documents(X, 25000)
+            duration = time.time() - start_time
+            if verbose:
+                print(f'Finished vectorizing inputs in {duration} seconds.')
+            if outdir:
+                save_keys_values_to_csv(outdir + 'times.csv', ['Vectorize inputs'], [duration])
+        
+        # Get the list of input indices associated with each label.
         labels_occurrences = get_labels_occurrences(Y)
-        labels_to_vectors_dict = vectorize_labels(input_matrix, labels_occurrences)
+        
+        # Vectorize the labels.
+        if verbose:
+            print('Vectorizing labels...')
+        start_time = time.time()
+        labels_to_vectors_dict = vectorize_labels(X, labels_occurrences)
+        duration = time.time() - start_time
+        if verbose:
+            print(f'Finished vectorizing labels in {duration} seconds.')
+        if outdir:
+            save_keys_values_to_csv(outdir + 'times.csv', ['Vectorize labels'], [duration])
 
         # Construct the label tree.
+        if verbose:
+            print('Constructing label tree...')
+        start_time = time.time()
         self.tree = LabelTree(max_labels_per_leaf)
         self.tree.build(labels_to_vectors_dict)
+        duration = time.time() - start_time
+        if verbose:
+            print(f'Finished building label tree in {duration} seconds.')
+        if outdir:
+            save_keys_values_to_csv(outdir + 'times.csv', ['Label tree build'], [duration])
 
         # For each internal node in the tree...
         for node in self.tree.internal_nodes:
-            # Get the indices of the training points that are 'active' in this node, i.e., all the
+            # Get the indices of the training points that are 'active' in this node, i.e. all the
             # training points that were tagged with labels contained in this node.
             active_indices = self._get_indices_of_inputs_active_in_node(node, labels_occurrences)
             
             # Iterate over the children of this node (left and right children).
             for child in node.get_children():
-                if child not in self.tree.leaves:
-                    # Get the indices of the training points that are 'active' and 'inactive' in
-                    # the child. The 'inactive' points are those that are active in the parent node
-                    # but not in the child. 
-                    active_indices_child = self._get_indices_of_inputs_active_in_node(child, labels_occurrences)
-                    inactive_indices_child = active_indices.difference(active_indices_child)
-                    
-                    # Get the positive and negative samples from the active and inactive indices.
-                    # Create the positive and negative labels for the samples.
-                    positive_samples = self._get_inputs_from_indices(X, active_indices_child)
-                    negative_samples = self._get_inputs_from_indices(X, inactive_indices_child)
-                    positive_labels = np.ones(len(positive_samples))
-                    negative_labels = np.zeros(len(negative_samples))
+                # Get the indices of the training points that are 'active' and 'inactive' in
+                # the child. The 'inactive' points are those that are active in the parent node
+                # but not in the child.
+                active_indices_child = self._get_indices_of_inputs_active_in_node(
+                    child, labels_occurrences)
+                inactive_indices_child = active_indices.difference(active_indices_child)
+                
+                # Get the positive and negative samples from the active and inactive indices.
+                # Create the positive and negative labels for the samples.
+                positive_samples = get_values_from_indices(X, active_indices_child)
+                negative_samples = get_values_from_indices(X, inactive_indices_child)
+                positive_labels = np.ones(len(positive_samples))
+                negative_labels = np.zeros(len(negative_samples))
 
-                    # Join the positive and negative samples into one list. Do the same for labels.
-                    all_samples = positive_samples + negative_samples
-                    all_labels = np.concatenate([positive_labels, negative_labels])
+                # Join the positive and negative samples into one list. Do the same for labels.
+                all_samples = vstack(positive_samples + negative_samples)
+                all_labels = np.concatenate([positive_labels, negative_labels])
 
-                    # Fit the classifier with the data.
-                    child.classifier.fit(all_samples, all_labels)
+                # Fit the classifier with the data.
+                child.classifier.fit(all_samples, all_labels)
         
         # For each leaf node in the tree...
         for leaf in self.tree.leaves:
@@ -80,21 +123,29 @@ class Parabel:
                 # Get the positive samples (training points having the label) and negative samples
                 # (training points belonging to the rest of the labels in this node).
                 # Create the positive and negative labels for the samples.
-                positive_samples = self._get_inputs_from_indices(X, labels_occurrences[label])
+                positive_samples = get_values_from_indices(X, labels_occurrences[label])
                 inactive_indices = input_indices.difference(set(labels_occurrences[label]))
-                negative_samples = self._get_inputs_from_indices(X, inactive_indices)
+                negative_samples = get_values_from_indices(X, inactive_indices)
                 positive_labels = np.ones(len(positive_samples))
                 negative_labels = np.zeros(len(negative_samples))
 
                 # Join the positive and negative samples into one list. Do the same for labels.
-                all_samples = positive_samples + negative_samples
+                all_samples = vstack(positive_samples + negative_samples)
                 all_labels = np.concatenate([positive_labels, negative_labels])
 
-                # Fit the classifier with the data.
+                # Fit the classifier for the label with the data.
                 leaf.labels_classifiers[label] = LogisticRegression(
                     fit_intercept=False, solver='liblinear')
                 leaf.labels_classifiers[label].fit(all_samples, all_labels)
+        
+        # Logging info to console and/or file.
+        train_duration = time.time() - start_time
+        if verbose:
+            print(f'Finished training in {train_duration} seconds.')
+        if outdir:
+            save_keys_values_to_csv(outdir + 'times.csv', ['Train'], [train_duration])
     
+
     def predict(self, x, search_width):
         '''
         Predicts the labels that correspond to a given data point.
@@ -137,14 +188,15 @@ class Parabel:
             for label, classifier in leaf.labels_classifiers.items():
                 # We use the second position in the tuple returned by predict_proba, because the
                 # first one corresponds to the probability of being in class 0 (rejected).
-                labels_probabilities[label] = classifier.predict_proba(x)[1]
+                labels_probabilities[label] = classifier.predict_proba(x)[0][1]
         
         # Sort the labels checked according to the probability of data point x being tagged with
         # them. Return the results.
         labels_sorted = sorted(labels_probabilities, key=labels_probabilities.get, reverse=True)
         return (labels_sorted, labels_probabilities)
     
-    def evaluate(self, X, Y, search_width, metrics, metrics_args=None):
+
+    def evaluate(self, X, Y, search_width, metrics, metrics_args=None, outdir=None, verbose=True):
         '''
         Evaluates the performance of the Parabel classifier on a test set.
 
@@ -164,10 +216,20 @@ class Parabel:
         dictionary contains parameters needed for the respective ValidationMetrics. If a given
         ValidationMetric does not require parameters, use None or an empty dictionary for it.
 
+        :param outdir: the directory (if any) where information regarding evaluation time and scores
+        will be outputted.
+
+        :param verbose: whether to print information about the status of the evaluation process in
+        the console as the procedure progresses.
+
         :returns: an array with the average scores obtained for each metric.
         '''
+        # Logging info to the console and initializing variables.
+        if verbose:
+            print('Evaluation has started.')
         Y = [set(labels.split('\t')) for labels in Y]
         scores = []
+        start_time = time.time()
 
         # Iterate over each metric.
         for i in range(len(metrics)):
@@ -185,9 +247,9 @@ class Parabel:
                     predicted = self._get_predicted_labels(labels_sorted, labels_probabilities)
                     predicted = set(predicted)
                     true_positives = len(Y[i].intersection(predicted))
-                    precision = true_positives / len(predicted)
+                    precision = 0 if len(predicted) == 0 else true_positives / len(predicted)
                     recall = true_positives / len(Y[i])
-                    f1 = 2 * precision * recall / (precision + recall)
+                    f1 = 0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
                     f1_total += f1
                 f1_total /= len(X)
                 scores.append(f1_total)
@@ -211,10 +273,21 @@ class Parabel:
                 precision_at_k_total /= len(X)
                 scores.append(precision_at_k_total)
         
+        # Logging info to console and/or file.
+        duration = time.time() - start_time
+        if verbose:
+            print(f'Finished evaluation in {duration} seconds.')
+            scores_str = [str(score) for score in scores]
+            print(f'Scores obtained were: {" ".join(scores_str)}')
+        if outdir:
+            save_keys_values_to_csv(outdir + 'times.csv', ['Evaluate'], [duration])
+            self._save_scores(metrics, scores, metrics_args, outdir)
+
         # Return scores.
         return np.array(scores)
     
-    def cross_validate(self, X, Y, folds, max_labels_per_leaf=100, search_width=10, convert_X=True, metrics=[ValidationMetric.F1_score_sample], metrics_args=[None]):
+
+    def cross_validate(self, X, Y, folds_dict, max_labels_per_leaf=100, search_width=10, convert_X=True, metrics=[ValidationMetric.F1_score_sample], metrics_args=[None], outdir=None, verbose=True):
         '''
         Performs a 10-fold cross validation of the Parabel classifier.
 
@@ -226,10 +299,8 @@ class Parabel:
         within the array has a string of labels (each one separated by a TAB character) that
         correspond to the labels with which the respective data point was tagged.
 
-        :param folds: an array of size N, where N is the number of input data points. Each value
-        within the array must indicate the fold (0-9) to which the corresponding input data point
-        belongs. Values greater than 9 will be considered extra data that will be used as part of
-        the training set in each iteration of the 10-fold cross validation.
+        :param folds_dict: a dictionary where the keys are the folds and the values are the lists of
+        input indices that belong to them.
 
         :param max_labels_per_leaf: the maximum allowed number of labels to have in a leaf node of
         the label tree that will be generated.
@@ -243,16 +314,40 @@ class Parabel:
         dictionary contains parameters needed for the respective ValidationMetrics. If a given
         ValidationMetric does not require parameters, use None or an empty dictionary for it.
 
+        :param outdir: the directory (if any) where information regarding evaluation time and scores
+        will be outputted.
+
+        :param verbose: whether to print information about the status of the cross-validation
+        process in the console as the procedure progresses.
+
         :returns: an array with the average cross validation scores obtained for each metric.
         '''
-        # Vectorize inputs (if needed), get a mapping of folds to the input indices and initialize
-        # the scores to zero.
-        input_matrix = vectorize_documents(X, 25000) if convert_X else X
-        folds_dict = self._get_folds_dictionary(folds)
+        # Logging info to the console.
+        if verbose:
+            print(f'Starting cross-validation...')
+
+        # Vectorize inputs (if needed).
+        if convert_X:
+            if verbose:
+                print('Vectorizing inputs...')
+            start_time = time.time()
+            X = vectorize_documents(X, 25000)
+            duration = time.time() - start_time
+            if verbose:
+                print(f'Finished vectorizing inputs in {duration} seconds.')
+            if outdir:
+                save_keys_values_to_csv(outdir + 'times.csv', ['Vectorize inputs'], [duration])
+
+        # Initialize values.
+        start_time = time.time()
         scores = np.zeros(len(metrics))
 
         # Perform 10 iterations varying the fold used for testing each time.
         for test_fold in range(10):
+            # Logging info to the console.
+            if verbose:
+                print(f'Starting iteration {test_fold + 1} of cross-validation...')
+
             # Get the indices of the data that will be used for training and testing in this
             # iteration.
             train_indices = []
@@ -261,38 +356,37 @@ class Parabel:
                     train_indices += folds_dict[train_fold]
             test_indices = folds_dict[test_fold]
 
+            # Logging info to the console.
+            if verbose:
+                print(f'Getting training and testing inputs and outputs of this iteration...')
+
             # Get the actual inputs and labels from the train and test indices.
-            train_inputs = self._get_inputs_from_indices(input_matrix, train_indices)
-            test_inputs = self._get_inputs_from_indices(input_matrix, test_indices)
-            train_labels = self._get_inputs_from_indices(Y, train_indices)
-            test_labels = self._get_inputs_from_indices(Y, test_indices)
+            train_inputs = get_values_from_indices(X, train_indices)
+            test_inputs = get_values_from_indices(X, test_indices)
+            train_labels = get_values_from_indices(Y, train_indices)
+            test_labels = get_values_from_indices(Y, test_indices)
             
-            # Train Parabel with the training data. Evaluate Parabel with the testing data. 
-            self.train(train_inputs, train_labels, max_labels_per_leaf, convert_X=False)
-            scores += self.evaluate(test_inputs, test_labels, search_width, metrics, metrics_args)
+            # Train Parabel with the training data. Evaluate Parabel with the testing data.
+            self.train(train_inputs, train_labels, max_labels_per_leaf,
+                convert_X=False, outdir=outdir, verbose=verbose)
+            scores += self.evaluate(test_inputs, test_labels, search_width,
+                metrics, metrics_args, outdir=outdir, verbose=True)
         
         # Average the scores obtained in all the iterations.
         scores /= 10
+        
+        # Logging info to the console and/or file.
+        duration = time.time() - start_time
+        if verbose:
+            print(f'Finished cross-validation in {duration} seconds.')
+            scores_str = [str(score) for score in scores]
+            print(f'Average scores obtained were: {" ".join(scores_str)}')
+        if outdir:
+            self._save_scores(metrics, scores, metrics_args, outdir, prefix='cross_val_')
+
+        # Return scores.
         return scores
-    
-    def _get_folds_dictionary(self, folds):
-        '''
-        Gets a mapping of folds to the training indices belonging to them.
 
-        :param folds: an array of size N, where N is the number of input data points. Each value
-        within the array must indicate the fold to which the corresponding input data point belongs.
-
-        :returns: a dictionary where the keys are the folds and the values are the lists of input
-        indices that belong to them.
-        '''
-        folds_dict = dict()
-        for i in range(len(folds)):
-            fold = folds[i]
-            if fold not in folds_dict:
-                folds_dict[fold] = [i]
-            else:
-                folds_dict[fold] += [i]
-        return folds_dict
 
     def _get_indices_of_inputs_active_in_node(self, node, labels_occurrences):
         '''
@@ -313,24 +407,7 @@ class Parabel:
                 x_indices.add(index)
         return x_indices
     
-    def _get_inputs_from_indices(self, X, indices):
-        '''
-        Gets the inputs that are placed in specific row indices of the input matrix.
 
-        :param X: matrix with shape (N, M), where N is the number of inputs and M is the number of
-        features of each input.
-
-        :param indices: set of indices indicating the rows that will be extracted from X and
-        returned in this method.
-
-        :returns: a list of vectors representing the inputs located at the given positions within
-        the matrix X.
-        '''
-        inputs = []
-        for index in indices:
-            inputs.append(X[index])
-        return inputs
-    
     def _get_predicted_labels(self, labels_sorted, labels_probabilities):
         '''
         Gets the list of labels that were predicted for a data point.
@@ -338,8 +415,8 @@ class Parabel:
         :param labels_sorted: list of predicted labels sorted from highest probability to lowest
         probability of being assigned to the data point.
 
-        :param labels_probabilities: list of probabilities of the predicted labels being assigned to
-        the data point. It is parallel to labels_sorted.
+        :param labels_probabilities: a dictionary, where the keys are the labels (strings) and the
+        values are the probabilities of data point x being tagged with them.
 
         :returns: the list of labels that were predicted for a data point (i.e. had a probability
         greater than or equal to 0.5)
@@ -348,16 +425,18 @@ class Parabel:
         right = len(labels_sorted) - 1
         while right - left > 1:
             mid = math.floor((left + right) / 2)
-            if labels_probabilities[mid] >= 0.5:
+            label = labels_sorted[mid]
+            if labels_probabilities[label] >= 0.5:
                 left = mid + 1
             else:
                 right = mid - 1
-        if (labels_probabilities[right] >= 0.5):
+        if (labels_probabilities[labels_sorted[right]] >= 0.5):
             return labels_sorted[:right + 1]
-        if (labels_probabilities[left] >= 0.5):
+        if (labels_probabilities[labels_sorted[left]] >= 0.5):
             return labels_sorted[:left + 1]
         return labels_sorted[:left]
     
+
     def _retain_most_probable_nodes(self, nodes, retain_size):
         '''
         Retains the nodes that have the highest log-likelihoods.
@@ -370,3 +449,31 @@ class Parabel:
         '''
         sorted_nodes = sorted(nodes, key = lambda node : node.log_likelihood, reverse=True)
         return set(sorted_nodes[:retain_size])
+    
+    
+    def _save_scores(self, metrics, scores, metrics_args, outdir, prefix=''):
+        '''
+        Saves scores obtained by Parabel to disk.
+
+        :param metrics: list of ValidationMetrics that were used for evaluating performance.
+
+        :param scores: list of scores achieved by Parabel. This list is parallel to the metrics'
+        list.
+
+        :param metrics_args: list of dictionaries that is parallel to the metrics' list. Each
+        dictionary contains parameters used within the respective ValidationMetrics. If a given
+        ValidationMetric did not require parameters, None or an empty dictionary will be its value.
+
+        :param outdir: directory where the scores are to be saved.
+
+        :param prefix: string with which each validation metric is going to be prefixed when being
+        saved to disk.
+        '''
+        metric_names = []
+        for i in range(len(metrics)):
+            metric_name = metrics[i].name
+            if metric_name.find('k') != -1:
+                k_value = metrics_args[i]['k']
+                metric_name = metric_name.replace('k', str(k_value))
+            metric_names.append(prefix + metric_name)
+        save_keys_values_to_csv(outdir + 'scores.csv', metric_names, scores)

@@ -70,6 +70,26 @@ def prepare_nltk():
     nltk.download('wordnet')
 
 
+def get_folds_dictionary(folds):
+    '''
+    Gets a mapping of folds to the training indices belonging to them.
+
+    :param folds: an array of size N, where N is the number of input data points. Each value
+    within the array must indicate the fold to which the corresponding input data point belongs.
+
+    :returns: a dictionary where the keys are the folds and the values are the lists of input
+    indices that belong to them.
+    '''
+    folds_dict = dict()
+    for i in range(len(folds)):
+        fold = folds[i]
+        if fold not in folds_dict:
+            folds_dict[fold] = [i]
+        else:
+            folds_dict[fold] += [i]
+    return folds_dict
+
+
 def get_labels_occurrences(Y):
     '''
     :param Y: an array of size N, where N is the number of input data points. Each position within
@@ -89,6 +109,42 @@ def get_labels_occurrences(Y):
                 labels_occurrences[label] += [index]
         index += 1
     return labels_occurrences
+
+
+def get_values_from_indices(collection, indices):
+    '''
+    Gets the values that are placed in specific row indices of a collection (matrix or list).
+
+    :param collection: collection (matrix or list) from which items / values will be extracted.
+
+    :param indices: set of indices indicating the rows that will be extracted from collection and
+    returned in this method.
+
+    :returns: a list of items representing the values located at the given positions within the
+    collection.
+    '''
+    values = []
+    for index in indices:
+        values.append(collection[index])
+    return values
+
+
+def save_keys_values_to_csv(path, keys, values):
+    '''
+    Saves key-value pairs within the same line of a CSV file.
+
+    :param path: the file path to the CSV file where the key-value pairs will be saved.
+
+    :param keys: the list of keys to save in the CSV file.
+
+    :param values: the list of values to save in the CSV file.
+    '''
+    with open(path, 'a') as f:
+        line = ''
+        for i in range(len(keys)):
+            line = line + f',{keys[i]},{values[i]}'
+        line = line[1:]
+        f.write(f'{line}\n')
 
 
 def transform_labels_to_vectors(input_matrix, labels, labels_ocurrences, start_index, end_index):
@@ -170,7 +226,8 @@ def vectorize_labels(input_matrix, labels_occurrences):
     with mp.Pool(processes=mp.cpu_count()) as pool:
         indices = [(i * labels_per_process, (i + 1) * labels_per_process)
             for i in range(mp.cpu_count())]
-        indices[len(indices) - 1][1] = -1
+        last_process_start_index = indices[len(indices) - 1][0]
+        indices[len(indices) - 1] = (last_process_start_index, -1)
         args = [(input_matrix, labels, labels_occurrences, start_index, end_index)
             for (start_index, end_index) in indices]
         results = pool.starmap(transform_labels_to_vectors, args)
