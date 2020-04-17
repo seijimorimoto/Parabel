@@ -57,7 +57,7 @@ def perform_iterative_evaluation(X, Y, folds, outdir):
         inputs += get_values_from_indices(X, new_indices)
         labels += get_values_from_indices(Y, new_indices)
         last_index = last_index + dataset_size
-        folds_temp[fold] += new_indices
+        folds_temp[10] += new_indices
         parabel.cross_validate(inputs, labels, folds_temp,
             convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
     
