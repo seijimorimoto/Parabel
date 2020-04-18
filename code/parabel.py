@@ -112,7 +112,7 @@ class Parabel:
                 all_labels = np.concatenate([positive_labels, negative_labels])
 
                 # Fit the classifier with the data.
-                child.classifier.fit(all_samples, all_labels)
+                child.fit_classifier(all_samples, all_labels)
         
         # For each leaf node in the tree...
         for leaf in self.tree.leaves:
@@ -135,9 +135,7 @@ class Parabel:
                 all_labels = np.concatenate([positive_labels, negative_labels])
 
                 # Fit the classifier for the label with the data.
-                leaf.labels_classifiers[label] = LogisticRegression(
-                    dual=True, solver='liblinear', max_iter=20)
-                leaf.labels_classifiers[label].fit(all_samples, all_labels)
+                leaf.fit_label_classifier(label, all_samples, all_labels)
         
         # Logging info to console and/or file.
         train_duration = time.time() - start_time
@@ -186,10 +184,8 @@ class Parabel:
         # the probability of the data point being tagged with the label.
         labels_probabilities = dict()
         for leaf in boundary_nodes:
-            for label, classifier in leaf.labels_classifiers.items():
-                # We use the second position in the tuple returned by predict_proba, because the
-                # first one corresponds to the probability of being in class 0 (rejected).
-                labels_probabilities[label] = classifier.predict_proba(x)[0][1]
+            for label in leaf.labels:
+                labels_probabilities[label] = leaf.predict_label_proba(label, x)
         
         # Sort the labels checked according to the probability of data point x being tagged with
         # them. Return the results.

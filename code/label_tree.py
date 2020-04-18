@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import random
+from scipy.sparse import csr_matrix
 from sklearn.linear_model import LogisticRegression
 
 
@@ -44,17 +45,93 @@ class LabelNode:
         self.right_child = node
         node.parent = self
     
+    def fit_classifier(self, X, Y):
+        '''
+        Fits this node's classifier with the given data.
+
+        :param X: input data to fit the classifier with.
+
+        :param Y: output data to fit the classifier with.
+        '''
+        self.classifier.fit(X, Y)
+        weights = self.classifier.coef_[0]
+        self.classifier.coef_ = self.sparsify_weights(weights)
+    
+    def fit_label_classifier(self, label, X, Y):
+        '''
+        Fits a leaf classifier from this node with the given data.
+
+        :param label: the label that indicates which classifier to fit.
+
+        :param X: input data to fit the classifier with.
+
+        :param Y: output data to fit the classifier with.
+        '''
+        self.labels_classifiers[label] = LogisticRegression(
+            dual=True, solver='liblinear', max_iter=20)
+        self.labels_classifiers[label].fit(X, Y)
+        weights = self.labels_classifiers[label].coef_[0]
+        self.labels_classifiers[label].coef_ = self.sparsify_weights(weights)
+    
+    def sparsify_weights(self, weights, threshold=0.1):
+        '''
+        Sparsifies a vector of weights by setting to 0 all the values that are belong a given
+        threshhold.
+
+        :param weights: the vector of weights to sparsify.
+
+        :threshold: the threshold below which the values of the weights vector will be set to 0.
+
+        :returns: a csr_matrix representing the weights vector with all its values below the
+        threshold set to 0.
+        '''
+        cols = []
+        data = []
+        for index in range(len(weights)):
+            if math.fabs(weights[index]) > threshold:
+                cols.append(index)
+                data.append(weights[index])
+        rows = np.zeros(len(cols), dtype=int)
+        return csr_matrix((data, (rows, cols)), shape=(1, len(weights)))
+
+    def predict_label_proba(self, label, x):
+        '''
+        Predicts the probability of a point x being tagged with a given label.
+
+        :param label: the label for which the probability of point x being tagged with it is
+        desired.
+
+        :param x: the point for which the probability will be found.
+
+        :returns: the probability of point x being tagged with label.
+        '''
+        return self.predict_proba(self.labels_classifiers[label], x)
+    
     def predict_log_proba(self, x):
         '''
-        Predict the log-likelihood of point x belonging to the probability distribution of this
-        node's classifier. Note that this method should only be used for internal nodes.
+        Predicts the log-likelihood of point x belonging to the probability distribution of this
+        node's classifier.
 
         :param x: the data point for which the log-likelihood is to be calculated.
 
         :returns: the log-likelihood. 
         '''
-        return self.classifier.predict_log_proba(x)[0][1]
+        proba = self.predict_proba(self.classifier, x)
+        return math.log(proba, math.e)
 
+    def predict_proba(self, clf, x):
+        '''
+        Predicts the probability of a point x belonging to the probability distribution of a
+        classifier.
+
+        :param classifier: the classifier for which x will be tested.
+
+        :param x: the data point for which the probability is to be calculated.
+
+        :returns: the probability.
+        '''
+        t = clf.coef_.dot(x.transpose()).toarray()[0][0] + clf.intercept_
+        return 1 / (1 + math.exp(-t))
 
 class LabelTree:
     '''
