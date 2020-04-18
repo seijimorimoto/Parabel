@@ -3,8 +3,9 @@ import numpy as np
 import time
 from code.label_tree import LabelTree
 from code.utils import *
+from joblib import dump, load
 from sklearn.linear_model import LogisticRegression
-from scipy.sparse import vstack
+from scipy.sparse import csr_matrix, vstack
 
 class Parabel:
     '''
@@ -135,7 +136,7 @@ class Parabel:
 
                 # Fit the classifier for the label with the data.
                 leaf.labels_classifiers[label] = LogisticRegression(
-                    fit_intercept=False, solver='liblinear')
+                    dual=True, solver='liblinear', max_iter=20)
                 leaf.labels_classifiers[label].fit(all_samples, all_labels)
         
         # Logging info to console and/or file.
@@ -167,7 +168,7 @@ class Parabel:
 
         # Explore all internal nodes level by level.
         for _ in range(depth - 1):
-            boundary_nodes_temp = boundary_nodes.copy()
+            boundary_nodes_temp = boundary_nodes
             boundary_nodes = set()
             # For each node in the boundary nodes of the current level...
             for node in boundary_nodes_temp:
@@ -230,49 +231,54 @@ class Parabel:
         Y = [set(labels.split('\t')) for labels in Y]
         scores = []
         start_time = time.time()
+        f1_index = None
+        precisions_indices = dict()
 
-        # Iterate over each metric.
-        for i in range(len(metrics)):
-            metric = metrics[i]
-            metric_args = metrics_args[i]
+        # Iterate over each test data point.
+        size = X.shape[0] if type(X) is csr_matrix else len(X)
+        for i in range(size):
+            test_point = X[i]
+            (labels_sorted, labels_probabilities) = self.predict(test_point, search_width)
 
-            # Procedure for the F1_score_sample metric.
-            if metric == ValidationMetric.F1_score_sample:
-                f1_total = 0
-                # Calculate the f1-score for each test point. Accumulate all the results and average
-                # them.
-                for i in range(len(X)):
-                    test_point = X[i]
-                    (labels_sorted, labels_probabilities) = self.predict(test_point, search_width)
+            # Iterate over each metric.
+            for j in range(len(metrics)):
+                metric = metrics[j]
+                metric_args = metrics_args[j]
+
+                # Procedure for the F1_score_sample metric.
+                if metric == ValidationMetric.F1_score_sample:
+                    # Calculate the f1-score for the test point and accumulate it.
                     predicted = self._get_predicted_labels(labels_sorted, labels_probabilities)
                     predicted = set(predicted)
                     true_positives = len(Y[i].intersection(predicted))
                     precision = 0 if len(predicted) == 0 else true_positives / len(predicted)
                     recall = true_positives / len(Y[i])
                     f1 = 0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
-                    f1_total += f1
-                f1_total /= len(X)
-                scores.append(f1_total)
+                    if f1_index is not None:
+                        scores[f1_index] += f1
+                    else:
+                        scores.append(f1)
+                        f1_index = len(scores) - 1
 
-            # Procedure for the Precision_at_k metric.
-            elif metric == ValidationMetric.Precision_at_k:
-                precision_at_k_total = 0
-                # Calculate the precision@k for each test point. Accumulate all the results and
-                # average them.
-                for i in range(len(X)):
-                    test_point = X[i]
+                # Procedure for the Precision_at_k metric.
+                elif metric == ValidationMetric.Precision_at_k:
+                    # Calculate the precision@k for the test point and accumulate it.
                     k = metric_args['k']
-                    (labels_sorted, _) = self.predict(test_point, search_width)
                     precision_at_k = 0
-                    for i in range(min(k, len(labels_sorted))):
-                        label = labels_sorted[i]
+                    for l in range(min(k, len(labels_sorted))):
+                        label = labels_sorted[l]
                         if label in Y[i]:
                             precision_at_k += 1
                     precision_at_k /= k
-                    precision_at_k_total += precision_at_k
-                precision_at_k_total /= len(X)
-                scores.append(precision_at_k_total)
+                    if k in precisions_indices:
+                        scores[precisions_indices[k]] += precision_at_k
+                    else:
+                        scores.append(precision_at_k)
+                        precisions_indices[k] = len(scores) - 1
         
+        # Average the scores obtained over all test data points.
+        scores = np.array(scores) / size
+
         # Logging info to console and/or file.
         duration = time.time() - start_time
         if verbose:
@@ -284,10 +290,10 @@ class Parabel:
             self._save_scores(metrics, scores, metrics_args, outdir)
 
         # Return scores.
-        return np.array(scores)
+        return scores
     
 
-    def cross_validate(self, X, Y, folds_dict, max_labels_per_leaf=100, search_width=10, convert_X=True, metrics=[ValidationMetric.F1_score_sample], metrics_args=[None], outdir=None, verbose=True):
+    def cross_validate(self, X, Y, folds_dict, max_labels_per_leaf=100, search_width=10, convert_X=True, metrics=[ValidationMetric.F1_score_sample], metrics_args=[None], best_metric_index=0, outdir=None, model_save_path=None, verbose=True):
         '''
         Performs a 10-fold cross validation of the Parabel classifier.
 
@@ -314,8 +320,15 @@ class Parabel:
         dictionary contains parameters needed for the respective ValidationMetrics. If a given
         ValidationMetric does not require parameters, use None or an empty dictionary for it.
 
+        :param best_metric_index: the index of the metric (within the metrics' list) to use for
+        comparing models of different iterations of cross validation. Only used if 'model_save_path'
+        is different from None, in which case it is used to determine which model (the best) to
+        save.
+
         :param outdir: the directory (if any) where information regarding evaluation time and scores
         will be outputted.
+
+        :param model_save_path: the path to the file where the best model will be saved.
 
         :param verbose: whether to print information about the status of the cross-validation
         process in the console as the procedure progresses.
@@ -341,6 +354,7 @@ class Parabel:
         # Initialize values.
         start_time = time.time()
         scores = np.zeros(len(metrics))
+        prev_best_score = -1
 
         # Perform 10 iterations varying the fold used for testing each time.
         for test_fold in range(10):
@@ -369,8 +383,14 @@ class Parabel:
             # Train Parabel with the training data. Evaluate Parabel with the testing data.
             self.train(train_inputs, train_labels, max_labels_per_leaf,
                 convert_X=False, outdir=outdir, verbose=verbose)
-            scores += self.evaluate(test_inputs, test_labels, search_width,
+            current_score = self.evaluate(test_inputs, test_labels, search_width,
                 metrics, metrics_args, outdir=outdir, verbose=True)
+            scores += current_score
+            
+            # Check if the current model is the best model so far, in which case, save it.
+            if model_save_path and current_score[best_metric_index] > prev_best_score:
+                self.save_model(model_save_path)
+                prev_best_score = current_score[best_metric_index]
         
         # Average the scores obtained in all the iterations.
         scores /= 10
@@ -386,6 +406,44 @@ class Parabel:
 
         # Return scores.
         return scores
+    
+
+    def save_model(self, filePath, verbose=True):
+        '''
+        Saves the current Parabel object to a file.
+
+        :param filePath: path to the file where the current object will be saved to.
+
+        :param verbose: whether to print information regarding the save process.
+        '''
+        if verbose:
+            print('Saving model...')
+            start = time.time()
+        dump(self, filePath)
+        if verbose:
+            duration = time.time() - start
+            print(f'Successfully saved model to {filePath} in {duration} seconds.')
+    
+
+    @classmethod
+    def load_model(cls, filePath, verbose=True):
+        '''
+        Loads a Parabel object from a file.
+
+        :param filePath: path to the file where the Parabel object is stored.
+
+        :param verbose: whether to print information regarding the loading process.
+
+        :returns: the loaded Parabel object.
+        '''
+        if verbose:
+            print(f'Loading model {filePath}...')
+            start = time.time()
+        model = load(filePath)
+        if verbose:
+            duration = time.time() - start
+            print(f'Finished loading model {filePath} in {duration} seconds.')
+        return model
 
 
     def _get_indices_of_inputs_active_in_node(self, node, labels_occurrences):

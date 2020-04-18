@@ -1,5 +1,4 @@
 import math
-import multiprocessing as mp
 import numpy as np
 import random
 from sklearn.linear_model import LogisticRegression
@@ -14,7 +13,7 @@ class LabelNode:
         '''
         Creates a node.
         '''
-        self.classifier = LogisticRegression(fit_intercept=False, solver='liblinear')
+        self.classifier = LogisticRegression(dual=True, solver='liblinear', max_iter=20)
         self.labels_classifiers = dict()
         self.labels = None
         self.left_child = None
@@ -121,7 +120,7 @@ class LabelTree:
             self._grow_node_recursive(n_left, labels_to_vectors_dict, level + 1)
             self._grow_node_recursive(n_right, labels_to_vectors_dict, level + 1)
 
-    def _partition(self, node_labels, labels_to_vectors_dict):
+    def _partition(self, node_labels, labels_to_vectors_dict, epsilon=0.0001):
         '''
         Partitions a set of labels into two sets (roughly equivalent in size). This is an
         implementation of the spherical balanced k-means algorithm, for k=2.
@@ -131,68 +130,78 @@ class LabelTree:
         :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
         their numerical vector representations as its values.
 
+        :param epsilon: float value that specifies the threshold for terminating the partitioning
+        procedure. If in consecutive iterations of the partitioning algorithm, the objective
+        function (sum of similarities of all labels to their respective assigned partitions) does
+        not improve more than epsilon, the partition process is stopped. 
+
         :returns: a tuple where the first element is the set of labels assigned to the left
         partition and the second element is the set of labels assigned to the right one.
         '''
         # Initialize a mean vector for the left and right partitions by uniformly sampling from all
-        # the label vectors.
+        # the label vectors without replacement.
         mean_label_left = random.choice(list(labels_to_vectors_dict.keys()))
-        mean_label_right = random.choice(list(labels_to_vectors_dict.keys()))
+        mean_label_right = mean_label_left
+        while mean_label_right == mean_label_left:
+            mean_label_right = random.choice(list(labels_to_vectors_dict.keys()))
         mean_vector_left = labels_to_vectors_dict[mean_label_left]
         mean_vector_right = labels_to_vectors_dict[mean_label_right]
 
-        # Initialize the sets of labels that will be assigned to the left and right partitions.
-        labelset_left = set()
-        labelset_right = set()
-        labelset_left_prev = set('dummy')
-        labelset_right_prev = set('dummy')
+        # Initialize the similarity scores for stopping the partition process.
+        old_similarity = -100
+        new_similarity = 0
 
         # Iterate over this loop which adjusts the label assignments to the left and right
-        # partitions until there is no change in assignments between consecutive iterations.
-        while labelset_left != labelset_left_prev or labelset_right != labelset_right_prev:
+        # partitions until there is no significant improvement in assignments between consecutive
+        # iterations.
+        while new_similarity - old_similarity >= epsilon:
             # Get the similarities of the labels to the left and right partitions.
-            (node_labels_ordered, similarities) = self._get_cluster_similarities(
-                mean_vector_left, mean_vector_right, node_labels, labels_to_vectors_dict)
+            node_labels_list = list(node_labels)
+            (similarities_left, similarities_right, similarities) = self._get_similarities(
+                mean_vector_left, mean_vector_right, node_labels_list, labels_to_vectors_dict)
 
-            # Set the current sets of labels assigned to the left and right partitions to be the
-            # previous sets. The current sets are now emptied so that new assignments are made in
-            # this iteration.
-            labelset_left_prev = labelset_left
-            labelset_right_prev = labelset_right
+            # Initialize the sets of labels that will be assigned to the left and right partitions.
+            # Also, update the similarity scores of the last and this iteration.
             labelset_left = set()
             labelset_right = set()
+            old_similarity = new_similarity
+            new_similarity = 0
 
-            # Get the dictionary mapping the labels to their rankings according to the similarities
-            # to the left and right partitions.
-            labels_rankings = self._get_labels_rankings(
-                node_labels_ordered, similarities)
+            # Sort the label indices in descending order of their similarity scores.
+            sorted_indices = np.argsort(np.array(similarities) * -1)
 
             # Iterate over the labels to partition. The labels that have a low ranking will be
             # assigned to the left partition. The labels with a high ranking will be assigned to the
-            # right partition. The label exactly in the middle will be asssigned to a partition
+            # right partition. The label exactly in the middle will be assigned to a partition
             # based on the sign of the similarity-value of the label to the left and right clusters.
-            for i in range(len(node_labels_ordered)):
-                label = node_labels_ordered[i]
-                rank = labels_rankings[label]
+            for rank in range(len(sorted_indices)):
+                label_index = sorted_indices[rank]
+                label = node_labels_list[label_index]
                 if rank < math.ceil(len(node_labels) / 2):
                     labelset_left.add(label)
+                    new_similarity += similarities_left[label_index]
                 elif rank > math.ceil(len(node_labels) / 2):
                     labelset_right.add(label)
+                    new_similarity += similarities_right[label_index]
                 else:
-                    if similarities[i] >= 0:
+                    if similarities[rank] >= 0:
                         labelset_left.add(label)
+                        new_similarity += similarities_left[label_index]
                     else:
                         labelset_right.add(label)
+                        new_similarity += similarities_right[label_index]
+            new_similarity /= len(sorted_indices)
 
             # Update the mean vectors of the left and right partitions based on the labels that were
-            # that were assigned to them in this iteration.
+            # assigned to them in this iteration.
             mean_vector_left = self._update_mean_vector(labelset_left, labels_to_vectors_dict)
             mean_vector_right = self._update_mean_vector(labelset_right, labels_to_vectors_dict)
 
         # Return sets of labels for the left and right partitions.
         return (labelset_left, labelset_right)
     
-    def _get_similarities(self, mean_left, mean_right, node_labels, labels_to_vectors_dict, start, end):
+
+    def _get_similarities(self, mean_left, mean_right, node_labels, labels_to_vectors_dict):
         '''
         Compute the 'similarities' between a set of label vectors and the mean vectors of left and
         right partitions/clusters.
@@ -202,103 +211,27 @@ class LabelTree:
         :param mean_vector_right: the mean vector of the right partition.
 
         :param node_labels: list of labels (strings) for which the similarities to the left and
-        right partitions will be computed. The similarities will be computed only for a portion of
-        the list.
-
-        :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
-        their numerical vector representations as its values.
-
-        :param start: the starting index of the portion of the list of labels for which the
-        similarities will be computed.
-
-        :param end: the last index (exclusive) of the portion of the list of labels for which the
-        similarities will be computed.
-
-        :returns: a tuple where its first element is a list of the labels (strings) for which the
-        similarities were computed. The second element is a list with the similarity scores
-        of the labels (this list is parallel to the labels' list).
-        '''
-        similarities = []
-        node_labels_ordered = []
-        end = len(node_labels) if end == -1 else end
-        for i in range(start, end):
-            label = node_labels[i]
-            label_vector = labels_to_vectors_dict[label]
-            similarities.append(
-                (mean_left.dot(label_vector) - mean_right.dot(label_vector)).toarray()[0][0])
-            node_labels_ordered.append(label)
-        return (node_labels_ordered, similarities)
-        
-
-    def _get_cluster_similarities(self, mean_vector_left, mean_vector_right, node_labels, labels_to_vectors_dict):
-        '''
-        Compute the 'similarities' between label vectors and the mean vectors of left and right
-        partitions/clusters.
-
-        :param mean_vector_left: the mean vector of the left partition.
-
-        :param mean_vector_right: the mean vector of the right partition.
-
-        :param node_labels: the set of labels (strings) for which the similarities to the left and
         right partitions will be computed.
 
         :param labels_to_vectors_dict: a dictionary containing labels (strings) as its keys and
         their numerical vector representations as its values.
 
-        :returns: a tuple where its first element is a list of the labels (strings) for which the
-        similarities were computed (essentially, this is the same as the node_labels, but in the
-        form of a list instead of a set). The second element is a list with the similarity scores
-        of the labels (this list is parallel to the labels' list).
+        :returns: a tuple where its first element is a list with the similarities of each label
+        vector to the left partition. The second element is a list with the similarities of each
+        label vector to the right partition. The third element is a list with the difference in
+        similarities between the left and right partitions for each label vector.
         '''
-        # Initialize lists and calculate the transpose of the mean vectors of the partitions.
+        similarities_left = []
+        similarities_right = []
         similarities = []
-        node_labels_ordered = []
-        left_t = mean_vector_left.transpose()
-        right_t = mean_vector_right.transpose()
-        labels_per_process = math.floor(len(node_labels) / mp.cpu_count())
+        for i in range(len(node_labels)):
+            label = node_labels[i]
+            label_vector = labels_to_vectors_dict[label].transpose()
+            similarities_left.append(mean_left.dot(label_vector).toarray()[0][0])
+            similarities_right.append(mean_right.dot(label_vector).toarray()[0][0])
+            similarities.append(similarities_left[i] - similarities_right[i])
+        return (similarities_left, similarities_right, similarities)
 
-        # Create N processes, one for each CPU core in the system. Each process will be in charge
-        # of computing the cluster similarities of a section of all the labels.
-        with mp.Pool(processes=mp.cpu_count()) as pool:
-            indices = [(i * labels_per_process, (i + 1) * labels_per_process)
-                for i in range(mp.cpu_count())]
-            last_process_start_index = indices[len(indices) - 1][0]
-            indices[len(indices) - 1] = (last_process_start_index, -1)
-            node_labels = list(node_labels)
-            args = [(left_t, right_t, node_labels, labels_to_vectors_dict, i, j)
-                for (i, j) in indices]
-            results = pool.starmap(self._get_similarities, args)
-            for (labels, simil) in results:
-                node_labels_ordered += labels
-                similarities += simil
-        return (node_labels_ordered, similarities)
-
-    def _get_labels_rankings(self, node_labels_ordered, values):
-        '''
-        Ranks labels by sorting them in descending order according to some values.
-
-        :param node_labels_ordered: list of labels to rank (ordered in the name of this parameter
-        just means that it is parallel to the values array).
-
-        :param values: list of values used for ordering the labels. Each value within this list is
-        associated with the label in the same index in the node_labels_ordered list.
-
-        :returns: a dictionary where the keys are the labels (strings) and the values correspond to
-        their ranks (each rank will be a value between 0 (inclusive) and the length of
-        node_labels_ordered (exclusive)).
-        '''
-        # Get the list of sorted indices in descending order.
-        values = np.array(values)
-        values = -1 * values
-        sorted_indices = np.argsort(values)
-        labels_rankings = dict()
-
-        # Rank the labels based on the sorted indices.
-        for i in range(len(sorted_indices)):
-            index = sorted_indices[i]
-            label = node_labels_ordered[index]
-            labels_rankings[label] = i
-        return labels_rankings
 
     def _update_mean_vector(self, labelset, labels_to_vectors_dict):
         '''
@@ -320,5 +253,6 @@ class LabelTree:
         euclidean_norm = updated_mean.dot(
             updated_mean.transpose()).toarray()[0][0]
         euclidean_norm = math.sqrt(euclidean_norm)
-        updated_mean = updated_mean / euclidean_norm
+        if euclidean_norm != 0:
+            updated_mean = updated_mean / euclidean_norm
         return updated_mean

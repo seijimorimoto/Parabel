@@ -1,5 +1,4 @@
 import math
-import multiprocessing as mp
 import nltk
 import pandas as pd
 import re
@@ -147,52 +146,6 @@ def save_keys_values_to_csv(path, keys, values):
         f.write(f'{line}\n')
 
 
-def transform_labels_to_vectors(input_matrix, labels, labels_ocurrences, start_index, end_index):
-    '''
-    Transforms a range of labels to their vector representation by averaging the input vectors that
-    were tagged with each label.
-
-    :param input_matrix: csr_matrix with shape (N, M), where N is the number of inputs and M is the
-    number of features of each input.
-
-    :param labels: list of labels used to tag the input. 
-
-    :param labels_ocurrences: a dictionary where the keys are labels (strings). The value associated
-    with each key/label is the list of indices of the inputs that were tagged with that label.
-
-    :param start_index: the start of the range of the labels' list that will be vectorized.
-
-    :param end_index: the end of the range of the labels' list that will be vectorized. -1 if the
-    range should end at the end of the list.
-
-    :returns: a dictionary containing the labels (strings) within the specified range as its keys.
-    The value associated with each key is the vector representation of the label. 
-    '''
-    labels_to_vectors_dict = dict()
-    if end_index == -1:
-        end_index = len(labels)
-    
-    # Iterate over the labels defined by the range start_index (inclusive) and end_index
-    # (exclusive). 
-    for i in range(start_index, end_index):
-        label = labels[i]
-        labels_to_vectors_dict[label] = 0
-        # Add all the input vectors that were tagged with the current label.
-        for input_index in labels_ocurrences[label]:
-            labels_to_vectors_dict[label] += input_matrix[input_index]
-        # Divide the vector of sums by its euclidean norm to obtain the mean vector, representing
-        # the label.
-        vector = labels_to_vectors_dict[label]
-        euclidean_norm = vector.dot(vector.transpose()).toarray()[0][0]
-        euclidean_norm = math.sqrt(euclidean_norm)
-        if euclidean_norm != 0:
-            labels_to_vectors_dict[label] /= euclidean_norm
-        else:
-            labels_to_vectors_dict[label][:] = 0
-    
-    return labels_to_vectors_dict
-
-
 def vectorize_documents(X, max_features=25000):
     '''
     Turns a series of text documents into Bag-of-Words (BoW) TF-IDF vectors.
@@ -223,18 +176,20 @@ def vectorize_labels(input_matrix, labels_occurrences):
     :returns: a dictionary containing the labels (strings) as its keys. The value associated with each key is the vector representation of the label.
     '''
     labels = list(labels_occurrences.keys())
-    labels_per_process = math.floor(len(labels) / mp.cpu_count())
     labels_to_vectors_dict = dict()
 
-    with mp.Pool(processes=mp.cpu_count()) as pool:
-        indices = [(i * labels_per_process, (i + 1) * labels_per_process)
-            for i in range(mp.cpu_count())]
-        last_process_start_index = indices[len(indices) - 1][0]
-        indices[len(indices) - 1] = (last_process_start_index, -1)
-        args = [(input_matrix, labels, labels_occurrences, start_index, end_index)
-            for (start_index, end_index) in indices]
-        results = pool.starmap(transform_labels_to_vectors, args)
-        for dictionary in results:
-            labels_to_vectors_dict.update(dictionary)
+    # Iterate over the labels.
+    for label in labels:
+        labels_to_vectors_dict[label] = 0
+        # Add all the input vectors that were tagged with the current label.
+        for input_index in labels_occurrences[label]:
+            labels_to_vectors_dict[label] += input_matrix[input_index]
+        # Divide the vector of sums by its euclidean norm to obtain the mean vector, representing
+        # the label.
+        vector = labels_to_vectors_dict[label]
+        euclidean_norm = vector.dot(vector.transpose()).toarray()[0][0]
+        euclidean_norm = math.sqrt(euclidean_norm)
+        if euclidean_norm != 0:
+            labels_to_vectors_dict[label] /= euclidean_norm
     
     return labels_to_vectors_dict

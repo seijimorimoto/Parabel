@@ -5,7 +5,7 @@ from code.parabel import Parabel
 from code.utils import *
 from joblib import dump, load
 
-def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
+def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir, model_save_dir):
     '''
     Iteratively perform validation of Parabel on subsets of the dataset given. Each iteration, a
     sub-dataset of different size will be used to perform the validation procedure.
@@ -25,6 +25,8 @@ def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
     given, or just perform a single training-evaluation procedure with each of them.
 
     :param outdir: the directory where information regarding time and scores will be outputted.
+
+    :param model_save_dir: the directory where the best model of each sub-dataset will be saved to.
     '''
     # Mapping folds to data points.
     print('Mapping folds to data points...')
@@ -44,13 +46,15 @@ def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
 
     # Get initial subset of the whole dataset and perform cross validation or simple training and
     # evaluation (using the first fold as evaluation) with it.
+    print('Starting subset T1...')
+    start_time = time.time()
     if cross_validate:
         for fold in range(10):
             inputs += get_values_from_indices(X, folds_dict[fold])
             labels += get_values_from_indices(Y, folds_dict[fold])
             folds_temp[fold] = folds_dict[fold]
-        parabel.cross_validate(inputs, labels, folds_temp,
-            convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir) 
+        parabel.cross_validate(inputs, labels, folds_temp, convert_X=False, metrics=metrics,
+            metrics_args=metrics_args, outdir=outdir, model_save_path=f'{model_save_dir}model_1') 
     else:
         for fold in range(1, 10):
             inputs += get_values_from_indices(X, folds_dict[fold])
@@ -60,6 +64,9 @@ def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
         parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
         parabel.evaluate(test_inputs, test_labels, 10,
             metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+        parabel.save_model(f'{model_save_dir}model_1')
+    duration = time.time() - start_time
+    print(f'Finished subset T1 in {duration} seconds.\n')
 
     # Iteratively double the size of the subset to use by adding more data from the original full
     # dataset. In each iteration, perform the cross validation procedure or simple training and
@@ -67,33 +74,44 @@ def perform_iterative_evaluation(X, Y, folds, cross_validate, outdir):
     last_index = 0
     folds_temp[10] = []
     for i in range(3):
+        print(f'Starting subset T{(i + 1) * 2}...')
+        start_time = time.time()
         dataset_size = len(inputs)
         new_indices = folds_dict[10][last_index : last_index + dataset_size]
         inputs += get_values_from_indices(X, new_indices)
         labels += get_values_from_indices(Y, new_indices)
         last_index = last_index + dataset_size
         folds_temp[10] += new_indices
+        model_path = f'{model_save_dir}model_{(i + 1) * 2}'
         if cross_validate:
-            parabel.cross_validate(inputs, labels, folds_temp,
-                convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+            parabel.cross_validate(inputs, labels, folds_temp, convert_X=False, metrics=metrics,
+                metrics_args=metrics_args, outdir=outdir, model_save_path=model_path)
         else:
             parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
             parabel.evaluate(test_inputs, test_labels, 10,
                 metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+            parabel.save_model(model_path)
+        duration = time.time() - start_time
+        print(f'Finished subset T{(i + 1) * 2} in {duration} seconds.\n')
     
     # Now use the full original dataset and perform cross validation with it or simple training and
     # evaluation (using the first fold as evaluation).
+    print('Starting subset Tall...')
+    start_time = time.time()
     new_indices = folds_dict[10][last_index : ]
     inputs += get_values_from_indices(X, new_indices)
     labels += get_values_from_indices(Y, new_indices)
     folds_temp[10] += new_indices
     if cross_validate:
-        parabel.cross_validate(inputs, labels, folds_temp,
-            convert_X=False, metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+        parabel.cross_validate(inputs, labels, folds_temp, convert_X=False, metrics=metrics,
+            metrics_args=metrics_args, outdir=outdir, model_save_path=f'{model_save_dir}model_all')
     else:
         parabel.train(inputs, labels, 100, convert_X=False, outdir=outdir)
         parabel.evaluate(test_inputs, test_labels, 10,
             metrics=metrics, metrics_args=metrics_args, outdir=outdir)
+        parabel.save_model(f'{model_save_dir}model_all')
+    duration = time.time() - start_time
+    print(f'Finished subset Tall in {duration} seconds.')
 
 
 def main():
@@ -135,7 +153,8 @@ def main():
             X = load(f'results/{args.dataset}/input_vectors.joblib')
 
         # Carry out the iterative evaluation procedure.
-        perform_iterative_evaluation(X, Y, folds, False, f'results/{args.dataset}/')
+        perform_iterative_evaluation(
+            X, Y, folds, True, f'results/{args.dataset}/', f'models/{args.dataset}/')
 
 
 if __name__ == "__main__":
