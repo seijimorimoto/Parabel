@@ -1,0 +1,62 @@
+Loading dataset...
+Finished loading dataset in 66.97198247909546 seconds.
+Mapping folds to data points...
+Finished mapping folds in 168.98155307769775 seconds.
+Starting subset T1...
+Training has started.
+Vectorizing labels...
+Finished vectorizing labels in 1096.305551290512 seconds.
+Constructing label tree...
+Finished building label tree in 1097.1377756595612 seconds.
+/home/am19529/Documents/Parabel/venv/lib/python3.6/site-packages/sklearn/svm/_base.py:947: ConvergenceWarning: Liblinear failed to converge, increase the number of iterations.
+  "the number of iterations.", ConvergenceWarning)
+Finished training in 5736.452959775925 seconds.
+Evaluation has started.
+Finished evaluation in 8659.40293955803 seconds.
+Scores obtained were: 0.428217355138877 0.7938501515807709 0.7102177813524119 0.6483759203118123
+Saving model...
+Successfully saved model to models/pubmed/model_1 in 10.1130530834198 seconds.
+Finished subset T1 in 15547.528293132782 seconds.
+
+Starting subset T2...
+Training has started.
+Vectorizing labels...
+Finished vectorizing labels in 2301.216618537903 seconds.
+Constructing label tree...
+Finished building label tree in 1363.9817280769348 seconds.
+Finished training in 10686.269052267075 seconds.
+Evaluation has started.
+Finished evaluation in 8954.808117628098 seconds.
+Scores obtained were: 0.45227020061728224 0.8142362185237889 0.736816597578745 0.668529975870815
+Saving model...
+Successfully saved model to models/pubmed/model_2 in 10.614009380340576 seconds.
+Finished subset T2 in 21994.980142116547 seconds.
+
+Starting subset T4...
+Training has started.
+Vectorizing labels...
+Finished vectorizing labels in 4956.093882799149 seconds.
+Constructing label tree...
+Finished building label tree in 1340.6032900810242 seconds.
+Finished training in 22327.13013124466 seconds.
+Evaluation has started.
+Finished evaluation in 9028.444180727005 seconds.
+Scores obtained were: 0.4645410821275388 0.8374992266287199 0.7488708779309846 0.6825774918022701
+Saving model...
+Successfully saved model to models/pubmed/model_4 in 10.620738506317139 seconds.
+Finished subset T4 in 36404.86069011688 seconds.
+
+Starting subset T6...
+Training has started.
+Vectorizing labels...
+Finished vectorizing labels in 10549.0832862854 seconds.
+Constructing label tree...
+Finished building label tree in 1422.9954991340637 seconds.
+Finished training in 48471.46975374222 seconds.
+Evaluation has started.
+Finished evaluation in 9266.894698143005 seconds.
+Scores obtained were: 0.4715333890195686 0.841350615603539 0.7522479325206869 0.6858937078512806
+Saving model...
+Successfully saved model to models/pubmed/model_6 in 11.41518497467041 seconds.
+Finished subset T6 in 68464.58088445663 seconds.
+
